@@ -20,6 +20,7 @@ def _get_tokenizer(tokenizer_path, num_bins=0):
         raise NotImplementedError(tokenizer_path)
     return tokenizer
 
+
 class Vid2Seq(torch.nn.Module):
     def __init__(
             self,
@@ -52,7 +53,7 @@ class Vid2Seq(torch.nn.Module):
         self.t5_model.resize_token_embeddings(len(tokenizer))  # add time tokens
         self.t5_tokenizer: T5Tokenizer = tokenizer
 
-        self.visual_encoder = VisionTransformer(
+        self.visual_encoder: VisionTransformer = VisionTransformer(
             num_features=num_features,
             video_embedding_dim=video_embedding_dim,
             depth=depth,
@@ -73,32 +74,32 @@ class Vid2Seq(torch.nn.Module):
 
     def forward(
         self,
-        video: dict[str, torch.Tensor] | torch.Tensor,
+        video: torch.Tensor | dict[str, torch.Tensor],
         input_tokenized: dict[str, torch.Tensor],
-        output_tokenized: dict[str, torch.Tensor]
+        target_tokenized: dict[str, torch.Tensor]
     ):
+        breakpoint()
         if self.use_video:
-            if isinstance(video, dict):  # cached
-                video_features, visual_attention = video["video"], video["atts_vis"]
-            else:
-                # shape: [batch_size, num_video_features, video_embedding_dim]
-                video_features: torch.Tensor = self.visual_encoder(video)
+            if isinstance(video, dict):  # Vide features are already cached
+                video_features, visual_attention = video["video_features"], video["atts_vis"]
+            else:  # Compute video features using the visual_encoder
+                # video shape: [batch_size, num_video_features, video_embedding_dim]
+                video_features: torch.Tensor = self.visual_encoder(video)  # shape: [batch_size, num_video_features, video_embedding_dim]
                 if self.proj_v2t is not None:
                     video_features = self.proj_v2t(video_features)
-                visual_attention: torch.Tensor = (
-                    torch.ones(video_features.size()[:-1], dtype=torch.long)
-                    .to(video_features.device, non_blocking=True)
-                )
+                # visual_attention shape: [num_video_features, num_video_features]
+                visual_attention: torch.Tensor = torch.ones(video_features.size()[:-1], dtype=torch.long)
+                visual_attention = visual_attention.to(video_features.device, non_blocking=True)
             video_dict = {"video": video_features, "atts_vis": visual_attention}
         else:
             video_dict = None
 
         if self.use_speech:
-            # shape: [batch_size, sequence_length, text_embedding_dim]
-            text_features: torch.Tensor = self.t5_model.encoder.embed_tokens(input_tokenized['input_ids'])
+            # text_features shape: [batch_size, sequence_length, text_embedding_dim]
+            embedded_tokens: torch.Tensor = self.t5_model.encoder.embed_tokens(input_tokenized['input_ids'])
             encoded = self.t5_model.encoder(
                 attention_mask=input_tokenized['attention_mask'],
-                inputs_embeds=text_features,
+                inputs_embeds=embedded_tokens,
             )
 
         if self.use_video and self.use_speech:
@@ -110,13 +111,13 @@ class Vid2Seq(torch.nn.Module):
         elif self.use_speech:
             encoder_attention = input_tokenized['attention_mask']
 
-        targets = output_tokenized['input_ids'].masked_fill(
-            output_tokenized['input_ids'] == self.t5_tokenizer.pad_token_id, -100
+        targets = target_tokenized['input_ids'].masked_fill(
+            target_tokenized['input_ids'] == self.t5_tokenizer.pad_token_id, -100
         )
         outputs = self.t5_model(
             encoder_outputs=encoded,
             attention_mask=encoder_attention,
-            decoder_attention_mask=output_tokenized['attention_mask'],
+            decoder_attention_mask=target_tokenized['attention_mask'],
             return_dict=True,
             labels=targets,
         )

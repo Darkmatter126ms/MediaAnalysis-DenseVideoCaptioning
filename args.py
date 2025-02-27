@@ -227,13 +227,13 @@ def get_args_parser():
             "t5-base", os.path.join(MODEL_DIR, "7BHF"), "Salesforce/blip2-flan-t5-xl"
         ),
     )
-    parser.add_argument(
-        "--bert_name",
-        default="bert-base-uncased",
-        choices=(
-            "bert-base-uncased"
-        ),
-    )
+    # parser.add_argument(
+    #     "--bert_name",
+    #     default="bert-base-uncased",
+    #     choices=(
+    #         "bert-base-uncased"
+    #     ),
+    # )
     parser.add_argument(
         "--text_encoder_dropout", default=0.1, type=float, help="dropout to use in the text encoder"
     )

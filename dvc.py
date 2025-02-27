@@ -5,19 +5,19 @@ import random
 import json
 import math
 import sys
-from typing import Iterable
 import argparse
 import time
 import datetime
 import re
 from util import dist
 from torch.utils.data import DataLoader, DistributedSampler
+from transformers import T5Tokenizer
 from collections import namedtuple
 from functools import reduce
 from pprint import pprint
 
 from dataset import densevideocaptioning_collate_fn, build_densevideocaptioning_dataset, build_yt_dataset, yt_collate_fn
-from model import build_vid2seq_model, _get_tokenizer
+from model import build_vid2seq_model, _get_tokenizer, Vid2Seq
 from args import get_args_parser
 from util.misc import adjust_learning_rate
 from util.metrics import MetricLogger
@@ -42,7 +42,7 @@ def main(args):
     random.seed(seed)
 
     # Build model
-    tokenizer = _get_tokenizer(args.model_name, args.num_bins)
+    tokenizer: T5Tokenizer = _get_tokenizer(args.model_name, args.num_bins)
 
     nt = namedtuple(
         typename="data",
@@ -120,6 +120,15 @@ def main(args):
 
     model = build_vid2seq_model(args, tokenizer)
     model.to(device)
+
+
+
+    # Thang NOTE: freeze most layers to reduce memory when training on laptop
+    for param in list(model.parameters())[:-1]:
+        param.requires_grad_(False)
+
+
+
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if dist.is_main_process():
@@ -259,7 +268,7 @@ def main(args):
 
 def train_one_epoch(
     model: torch.nn.Module,
-    data_loader: Iterable,
+    data_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     epoch: int,
@@ -270,23 +279,24 @@ def train_one_epoch(
     header = "Epoch: [{}]".format(epoch)
     num_training_steps = int(len(data_loader) * args.epochs)
 
-    for i_batch, batch_dict in enumerate(
+    for batch_idx, batch_dict in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
-        video_features: torch.Tensor = batch_dict["video"].to(device, non_blocking=True)
-        output_tokens = batch_dict["output_tokens"].to(device, non_blocking=True)
-        output_tokenized = {
-            'input_ids': output_tokens,
-            'attention_mask': output_tokens != 0
-        }
-        if "input_tokens" not in batch_dict and args.use_speech:
-            input_tokens = torch.ones((output_tokens.shape[0], 1)).long().to(device, non_blocking=True)
+        batch_size: int = len(batch_dict["video_id"])
+        # video_features shape: [batch_size, num_video_features, video_embedding_dim]
+        video_features: torch.Tensor = batch_dict["video_features"].to(device, non_blocking=True)
+
+        # Use speech (video subtitles) alongside video_features as input
+        if args.use_speech and "input_tokens" in batch_dict.keys():
+            # input_tokens shape: [batch_size, num_input_tokens]
+            input_tokens: torch.Tensor = batch_dict["input_tokens"].to(device, non_blocking=True)
             input_tokenized = {
                 'input_ids': input_tokens,
                 'attention_mask': input_tokens != 0
             }
-        elif "input_tokens" in batch_dict:
-            input_tokens = batch_dict["input_tokens"].to(device, non_blocking=True)
+        elif args.use_speech and "input_tokens" not in batch_dict.keys():
+            # input_tokens shape: [batch_size, 1]
+            input_tokens = torch.ones(size=(batch_size, 1)).long().to(device, non_blocking=True)
             input_tokenized = {
                 'input_ids': input_tokens,
                 'attention_mask': input_tokens != 0
@@ -297,9 +307,16 @@ def train_one_epoch(
                 'attention_mask': None
             }
 
-        # forward
-        if args.genasr and args.generative:  # vid2seq style generative loss on speech sequence
-            geninput_tokens = torch.ones((output_tokens.shape[0], 1)).long().to(device, non_blocking=True)
+        # target_tokens shape: [batch_size, num_target_tokens]
+        target_tokens: torch.Tensor = batch_dict["target_tokens"].to(device, non_blocking=True)
+        target_tokenized = {
+            'input_ids': target_tokens,
+            'attention_mask': target_tokens != 0
+        }
+
+        # First forward step: generative pretraining
+        if args.genasr and args.generative:  # Generative pretraining: input (video) -> output (speech)
+            geninput_tokens = torch.ones((batch_size, 1)).long().to(device, non_blocking=True)
             geninput_tokenized = {
                 'input_ids': geninput_tokens,
                 'attention_mask': geninput_tokens != 0
@@ -307,34 +324,36 @@ def train_one_epoch(
             loss_dict, video_dict = model(
                 video=video_features,
                 input_tokenized=geninput_tokenized,
-                output_tokenized=input_tokenized,
+                target_tokenized=input_tokenized,
             )
-            loss = args.generative * loss_dict["loss"]
-
+            loss: torch.Tensor = args.generative * loss_dict["loss"]
         elif args.generative:
             loss_dict, video_dict = model(
                 video=video_features,
                 input_tokenized=input_tokenized,
-                output_tokenized=output_tokenized,
+                target_tokenized=target_tokenized,
             )
             loss = args.generative * loss_dict["loss"]
 
+        # Second forward step: denoising pretraining
         if args.denoising:
-            denoising_output_tokens = batch_dict["denoising_output_tokens"].to(device, non_blocking=True)
-            denoising_output_tokenized = {
-                'input_ids': denoising_output_tokens,
-                'attention_mask': denoising_output_tokens != 0
-            }
-            denoising_input_tokens = batch_dict["denoising_input_tokens"].to(device, non_blocking=True)
+            # denoising_input_tokens shape: [batch_size, num_denoising_input_tokens]
+            denoising_input_tokens: torch.Tensor = batch_dict["denoising_input_tokens"].to(device, non_blocking=True)
             denoising_input_tokenized = {
                 'input_ids': denoising_input_tokens,
                 'attention_mask': denoising_input_tokens != 0
+            }
+            # denoising_target_tokens shape: [batch_size, num_denoising_target_tokens]
+            denoising_target_tokens: torch.Tensor = batch_dict["denoising_target_tokens"].to(device, non_blocking=True)
+            denoising_target_tokenized = {
+                'input_ids': denoising_target_tokens,
+                'attention_mask': denoising_target_tokens != 0
             }
             if args.generative:
                 denoising_loss_dict, _ = model(
                     video=video_dict,
                     input_tokenized=denoising_input_tokenized,
-                    output_tokenized=denoising_output_tokenized,
+                    target_tokenized=denoising_target_tokenized,
                 )
                 loss_dict.update({"denoising_loss": denoising_loss_dict["loss"]})
                 loss += args.denoising * denoising_loss_dict["loss"]
@@ -342,7 +361,7 @@ def train_one_epoch(
                 denoising_loss_dict, _ = model(
                     video=video_features,
                     input_tokenized=denoising_input_tokenized,
-                    output_tokenized=denoising_output_tokenized,
+                    target_tokenized=denoising_target_tokenized,
                 )
                 loss_dict = {"denoising_loss": denoising_loss_dict["loss"]}
                 loss = args.denoising * denoising_loss_dict["loss"]
@@ -363,7 +382,7 @@ def train_one_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
         optimizer.step()
 
-        with torch.no_grad():
+        with torch.inference_mode():
             # Normalize time embeddings.
             frozen_norm = torch.norm(model.t5_model.shared.weight[:-args.num_bins, :], dim=1).mean(0)
             trainable_weight = model.t5_model.shared.weight[-args.num_bins:, :]
@@ -375,23 +394,24 @@ def train_one_epoch(
 
         adjust_learning_rate(
             optimizer,
-            curr_step=epoch * len(data_loader) + i_batch,
+            curr_step=epoch * len(data_loader) + batch_idx,
             num_training_steps=num_training_steps,
             args=args,
         )
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-    # gather the stats from all processes
+
+    # Gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate(
-    model: torch.nn.Module,
-    data_loader,
+    model: Vid2Seq,
+    data_loader: DataLoader,
     device: torch.device,
     args,
     split="test",
@@ -403,7 +423,7 @@ def evaluate(
 
     res = {}
 
-    for i_batch, batch_dict in enumerate(
+    for batch_idx, batch_dict in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
         duration = batch_dict["duration"]
@@ -461,7 +481,7 @@ def evaluate(
 
     all_res = dist.all_gather(res)
     results = reduce(lambda a, b: a.update(b) or a, all_res, {})
-    assert len(results) == len(data_loader.dataset)
+    assert len(results) == len(data_loader)
     metrics = {}
     if dist.is_main_process():
         if args.save_dir:
