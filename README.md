@@ -305,3 +305,10 @@ author={Antoine Yang and Arsha Nagrani and Ivan Laptev and Josef Sivic and Corde
 booktitle={NeurIPS},
 year={2023}}
 ```
+
+## Contributions
+| Part | Name |
+| ------------- | ------------- |
+| Datasets, Evaluation Metrics | Allen |
+| Image Feature Extraction | Toan |
+| Pre-training, text encoder & decoder | Thang |
