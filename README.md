@@ -8,7 +8,7 @@
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/vidchapters-7m-video-chapters-at-scale/zero-shot-dense-video-captioning-on-youcook2)](https://paperswithcode.com/sota/zero-shot-dense-video-captioning-on-youcook2?p=vidchapters-7m-video-chapters-at-scale)
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/vidchapters-7m-video-chapters-at-scale/zero-shot-dense-video-captioning-on-vitt)](https://paperswithcode.com/sota/zero-shot-dense-video-captioning-on-vitt?p=vidchapters-7m-video-chapters-at-scale)
 
-[Webpage](https://antoyang.github.io/vidchapters.html) • [Paper](https://drive.google.com/file/d/1Eq5tSbGKAwhfBeYLBe8KBY5rFDtWnvAv/view?usp=sharing)
+[Webpage](https://antoyang.github.io/vidchapters.html) • [Paper](https://drive.google.com/file/d/1747t5f6Lqw7IJKG8QtCPFSjDma1zsPqv/view?usp=sharing)
 
 Reference: https://github.com/antoyang/VidChapters
 
