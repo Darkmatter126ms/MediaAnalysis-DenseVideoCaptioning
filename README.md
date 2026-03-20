@@ -311,4 +311,4 @@ year={2023}}
 | ------------- | ------------- |
 | Datasets, Evaluation Metrics | Allen |
 | Image Feature Extraction | Toan |
-| Pre-training, text encoder & decoder | Thang |
+| Pre-training, text encoder & decoder | Allen, Thang |
